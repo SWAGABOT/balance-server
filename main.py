@@ -16,12 +16,13 @@ app.add_middleware(
 conn = sqlite3.connect('balances.db', check_same_thread=False)
 cursor = conn.cursor()
 
-# Таблица пользователей (два типа баланса)
+# Таблица пользователей (два типа баланса + приватность)
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS users (
         user_id TEXT PRIMARY KEY,
         usdt_balance REAL DEFAULT 0,
-        swag_balance REAL DEFAULT 0
+        swag_balance REAL DEFAULT 0,
+        privacy TEXT DEFAULT 'public'
     )
 ''')
 
@@ -89,6 +90,25 @@ def add_balance(user_id: str, data: dict):
     cursor.execute("SELECT usdt_balance, swag_balance FROM users WHERE user_id=?", (user_id,))
     result = cursor.fetchone()
     return {"usdt": result[0], "swag": result[1]}
+
+# ======================================
+# ==== ПРИВАТНОСТЬ =====================
+# ======================================
+
+@app.post("/set_privacy/{user_id}")
+def set_privacy(user_id: str, data: dict):
+    privacy = data.get('privacy', 'public')
+    cursor.execute("UPDATE users SET privacy = ? WHERE user_id=?", (privacy, user_id))
+    conn.commit()
+    return {"success": True}
+
+@app.get("/get_privacy/{user_id}")
+def get_privacy(user_id: str):
+    cursor.execute("SELECT privacy FROM users WHERE user_id=?", (user_id,))
+    result = cursor.fetchone()
+    if result:
+        return {"privacy": result[0]}
+    return {"privacy": "public"}
 
 # ======================================
 # ==== ОРДЕРА ===========================
@@ -300,11 +320,11 @@ def get_user_orders(user_id: str):
 
 @app.get("/leaderboard")
 def get_leaderboard(limit: int = 10):
-    """Получить топ пользователей по балансу SWAG"""
+    """Получить топ пользователей по балансу SWAG (только PUBLIC)"""
     cursor.execute('''
-        SELECT user_id, swag_balance, usdt_balance 
+        SELECT user_id, swag_balance 
         FROM users 
-        WHERE swag_balance > 0 
+        WHERE swag_balance > 0 AND privacy = 'public'
         ORDER BY swag_balance DESC 
         LIMIT ?
     ''', (limit,))
@@ -315,8 +335,7 @@ def get_leaderboard(limit: int = 10):
     for row in rows:
         leaderboard.append({
             "user_id": row[0],
-            "swag": float(row[1]),
-            "usdt": float(row[2])
+            "swag": float(row[1])
         })
     
     return {"leaderboard": leaderboard}
@@ -329,6 +348,8 @@ def root():
         "endpoints": {
             "balance": "/balance/{user_id}",
             "add_balance": "/balance/add/{user_id}",
+            "set_privacy": "/set_privacy/{user_id}",
+            "get_privacy": "/get_privacy/{user_id}",
             "orders": "/orders",
             "create_order": "/orders/create",
             "cancel_order": "/orders/cancel/{order_id}",

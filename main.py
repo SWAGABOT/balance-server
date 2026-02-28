@@ -34,7 +34,7 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Таблица пользователей
+    # Таблица пользователей с двумя типами баланса
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id TEXT PRIMARY KEY,
@@ -88,7 +88,7 @@ COMMISSION = 0.02  # 2% комиссия
 
 @app.get("/balance/{user_id}")
 def get_balance(user_id: str):
-    """Получить баланс пользователя"""
+    """Получить баланс пользователя (USDT и SWAG)"""
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()

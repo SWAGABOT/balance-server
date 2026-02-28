@@ -294,6 +294,33 @@ def get_user_orders(user_id: str):
         })
     return {"orders": orders}
 
+# ======================================
+# ==== ЛИДЕРБОРД =======================
+# ======================================
+
+@app.get("/leaderboard")
+def get_leaderboard(limit: int = 10):
+    """Получить топ пользователей по балансу SWAG"""
+    cursor.execute('''
+        SELECT user_id, swag_balance, usdt_balance 
+        FROM users 
+        WHERE swag_balance > 0 
+        ORDER BY swag_balance DESC 
+        LIMIT ?
+    ''', (limit,))
+    
+    rows = cursor.fetchall()
+    
+    leaderboard = []
+    for row in rows:
+        leaderboard.append({
+            "user_id": row[0],
+            "swag": float(row[1]),
+            "usdt": float(row[2])
+        })
+    
+    return {"leaderboard": leaderboard}
+
 @app.get("/")
 def root():
     return {
@@ -306,6 +333,7 @@ def root():
             "create_order": "/orders/create",
             "cancel_order": "/orders/cancel/{order_id}",
             "execute_order": "/orders/execute/{order_id}",
-            "user_orders": "/orders/user/{user_id}"
+            "user_orders": "/orders/user/{user_id}",
+            "leaderboard": "/leaderboard"
         }
     }

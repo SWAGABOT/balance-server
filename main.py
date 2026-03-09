@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 import os
 from datetime import datetime
-import json
 
 app = FastAPI()
 
@@ -15,20 +14,20 @@ app.add_middleware(
 )
 
 # ======================================
-# ==== НАСТРОЙКА БАЗЫ ДАННЫХ ===========
+# ==== БАЗА ДАННЫХ В ПАПКЕ DATA =======
 # ======================================
 
-# База данных будет храниться в папке /app/data/ (Volume)
-# Эта папка сохраняется между деплоями на Railway
-DB_PATH = os.path.join(os.getcwd(), 'data', 'balances.db')
-
 # Создаём папку data, если её нет
-os.makedirs(os.path.join(os.getcwd(), 'data'), exist_ok=True)
+os.makedirs('data', exist_ok=True)
+
+# База будет храниться в папке data
+DB_PATH = 'data/balances.db'
+print(f"📦 База данных: {DB_PATH}")
 
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
-# Таблица пользователей (с замороженными средствами)
+# Таблица пользователей
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS users (
         user_id TEXT PRIMARY KEY,
@@ -71,7 +70,6 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# Комиссия отключена
 COMMISSION = 0.00
 
 # ======================================
@@ -108,15 +106,13 @@ def add_balance(user_id: str, data: dict):
     return {"usdt": result[0], "swag": result[1]}
 
 # ======================================
-# ==== СТАТИСТИКА ПОЛЬЗОВАТЕЛЯ =========
+# ==== СТАТИСТИКА ======================
 # ======================================
 
 @app.get("/user/stats/{user_id}")
 def get_user_stats(user_id: str):
-    """Возвращает количество сделок и общий объём для пользователя"""
     cursor.execute('''
-        SELECT COUNT(*) as trades_count, SUM(total) as total_volume 
-        FROM trades 
+        SELECT COUNT(*), SUM(total) FROM trades 
         WHERE buyer_id = ? OR seller_id = ?
     ''', (user_id, user_id))
     
@@ -124,18 +120,10 @@ def get_user_stats(user_id: str):
     trades_count = result[0] or 0
     total_volume = result[1] or 0
     
-    return {
-        "trades": trades_count,
-        "volume": total_volume
-    }
-
-# ======================================
-# ==== ЛИДЕРБОРД =======================
-# ======================================
+    return {"trades": trades_count, "volume": total_volume}
 
 @app.get("/leaderboard")
 def get_leaderboard(limit: int = 20):
-    """Топ пользователей по балансу SWAG"""
     cursor.execute('''
         SELECT user_id, swag_balance FROM users 
         ORDER BY swag_balance DESC 
@@ -144,21 +132,17 @@ def get_leaderboard(limit: int = 20):
     
     rows = cursor.fetchall()
     leaderboard = [{"user_id": row[0], "swag": row[1]} for row in rows]
-    
     return {"leaderboard": leaderboard}
 
 # ======================================
-# ==== ОРДЕРА ===========================
+# ==== ОРДЕРА ==========================
 # ======================================
 
 @app.get("/orders")
 def get_orders():
-    """Получить все активные ордера"""
     cursor.execute('''
         SELECT id, user_id, type, amount, price, total, min_limit, max_limit, created_at 
-        FROM orders 
-        WHERE status = 'active'
-        ORDER BY price DESC
+        FROM orders WHERE status = 'active' ORDER BY price DESC
     ''')
     rows = cursor.fetchall()
     
@@ -179,7 +163,6 @@ def get_orders():
 
 @app.post("/orders/create")
 def create_order(data: dict):
-    """Создать новый ордер с проверкой баланса и заморозкой"""
     user_id = data.get('user_id')
     order_type = data.get('type')
     amount = data.get('amount')
@@ -189,7 +172,6 @@ def create_order(data: dict):
     total = amount * price
     created_at = datetime.now().isoformat()
     
-    # Получаем баланс пользователя
     cursor.execute("SELECT usdt_balance, swag_balance FROM users WHERE user_id=?", (user_id,))
     user = cursor.fetchone()
     if not user:
@@ -199,13 +181,11 @@ def create_order(data: dict):
     else:
         usdt, swag = user
     
-    # Проверяем достаточно ли средств
     if order_type == 'sell' and swag < amount:
-        return {"error": f"Insufficient SWAG balance. You have {swag} SWAG"}, 400
+        return {"error": f"Insufficient SWAG. You have {swag}"}, 400
     if order_type == 'buy' and usdt < total:
-        return {"error": f"Insufficient USDT balance. You have {usdt} USDT"}, 400
+        return {"error": f"Insufficient USDT. You have {usdt}"}, 400
     
-    # Замораживаем средства
     if order_type == 'sell':
         cursor.execute("UPDATE users SET swag_balance = swag_balance - ?, swag_frozen = swag_frozen + ? WHERE user_id=?", 
                       (amount, amount, user_id))
@@ -213,7 +193,6 @@ def create_order(data: dict):
         cursor.execute("UPDATE users SET usdt_balance = usdt_balance - ?, usdt_frozen = usdt_frozen + ? WHERE user_id=?", 
                       (total, total, user_id))
     
-    # Создаем ордер
     cursor.execute('''
         INSERT INTO orders (user_id, type, amount, price, total, min_limit, max_limit, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -237,7 +216,6 @@ def create_order(data: dict):
 
 @app.post("/orders/cancel/{order_id}")
 def cancel_order(order_id: int, data: dict):
-    """Отменить ордер и разморозить средства"""
     user_id = data.get('user_id')
     
     cursor.execute('''
@@ -254,7 +232,6 @@ def cancel_order(order_id: int, data: dict):
     if seller_id != user_id:
         return {"error": "Not your order"}, 403
     
-    # Размораживаем средства
     if order_type == 'sell':
         cursor.execute("UPDATE users SET swag_balance = swag_balance + ?, swag_frozen = swag_frozen - ? WHERE user_id=?", 
                       (amount, amount, user_id))
@@ -263,8 +240,7 @@ def cancel_order(order_id: int, data: dict):
                       (total, total, user_id))
     
     cursor.execute('''
-        UPDATE orders SET status = 'cancelled' 
-        WHERE id = ?
+        UPDATE orders SET status = 'cancelled' WHERE id = ?
     ''', (order_id,))
     conn.commit()
     
@@ -272,13 +248,11 @@ def cancel_order(order_id: int, data: dict):
 
 @app.post("/orders/execute/{order_id}")
 def execute_order(order_id: int, data: dict):
-    """Исполнить ордер (купить/продать)"""
     buyer_id = data.get('user_id')
     amount = data.get('amount')
     
     cursor.execute('''
-        SELECT * FROM orders 
-        WHERE id = ? AND status = 'active'
+        SELECT * FROM orders WHERE id = ? AND status = 'active'
     ''', (order_id,))
     order = cursor.fetchone()
     
@@ -296,24 +270,19 @@ def execute_order(order_id: int, data: dict):
         "max_limit": order[7]
     }
     
-    # Запрещаем торговлю с самим собой
     if buyer_id == order_data['seller_id']:
         return {"error": "Cannot trade with yourself"}, 400
     
-    # Проверка лимитов
     if order_data['min_limit'] > 0 and amount < order_data['min_limit']:
-        return {"error": f"Minimum amount is {order_data['min_limit']} SWAG"}, 400
-    
+        return {"error": f"Min amount {order_data['min_limit']}"}, 400
     if order_data['max_limit'] > 0 and amount > order_data['max_limit']:
-        return {"error": f"Maximum amount is {order_data['max_limit']} SWAG"}, 400
-    
+        return {"error": f"Max amount {order_data['max_limit']}"}, 400
     if amount > order_data['amount']:
-        return {"error": f"Not enough SWAG. Available: {order_data['amount']}"}, 400
+        return {"error": f"Only {order_data['amount']} available"}, 400
     
     total_price = amount * order_data['price']
     fee = total_price * COMMISSION
     
-    # Получаем балансы участников
     cursor.execute("SELECT usdt_balance, swag_balance, usdt_frozen, swag_frozen FROM users WHERE user_id=?", (buyer_id,))
     buyer = cursor.fetchone()
     cursor.execute("SELECT usdt_balance, swag_balance, usdt_frozen, swag_frozen FROM users WHERE user_id=?", (order_data['seller_id'],))
@@ -322,40 +291,32 @@ def execute_order(order_id: int, data: dict):
     if not buyer or not seller:
         return {"error": "User not found"}, 404
     
-    # Исполнение сделки в зависимости от типа ордера
     if order_data['type'] == 'sell':
-        # Покупатель покупает у продавца (покупатель отдает USDT, получает SWAG)
         if buyer[0] < total_price:
-            return {"error": "Insufficient USDT balance"}, 400
+            return {"error": "Insufficient USDT"}, 400
         
-        # Обновляем балансы
         cursor.execute("UPDATE users SET usdt_balance = usdt_balance - ? WHERE user_id=?", (total_price, buyer_id))
         cursor.execute("UPDATE users SET swag_balance = swag_balance + ? WHERE user_id=?", (amount, buyer_id))
-        
         cursor.execute("UPDATE users SET swag_frozen = swag_frozen - ? WHERE user_id=?", (amount, order_data['seller_id']))
         cursor.execute("UPDATE users SET usdt_balance = usdt_balance + ? WHERE user_id=?", 
                       (total_price - fee, order_data['seller_id']))
-        
-    else:  # buy ордер
+    else:
         if buyer[1] < amount:
-            return {"error": "Insufficient SWAG balance"}, 400
+            return {"error": "Insufficient SWAG"}, 400
         
         cursor.execute("UPDATE users SET swag_balance = swag_balance - ? WHERE user_id=?", (amount, buyer_id))
         cursor.execute("UPDATE users SET usdt_balance = usdt_balance + ? WHERE user_id=?", (total_price, buyer_id))
-        
         cursor.execute("UPDATE users SET usdt_frozen = usdt_frozen - ? WHERE user_id=?", 
                       (total_price, order_data['seller_id']))
         cursor.execute("UPDATE users SET swag_balance = swag_balance + ? WHERE user_id=?", 
                       (amount - fee, order_data['seller_id']))
     
-    # Обновляем ордер
     new_amount = order_data['amount'] - amount
     if new_amount == 0:
         cursor.execute("UPDATE orders SET status = 'completed' WHERE id=?", (order_id,))
     else:
         cursor.execute("UPDATE orders SET amount = ? WHERE id=?", (new_amount, order_id))
     
-    # Сохраняем сделку
     cursor.execute('''
         INSERT INTO trades (order_id, buyer_id, seller_id, amount, price, total, fee, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -373,11 +334,8 @@ def execute_order(order_id: int, data: dict):
 
 @app.get("/orders/user/{user_id}")
 def get_user_orders(user_id: str):
-    """Получить ордера пользователя"""
     cursor.execute('''
-        SELECT * FROM orders 
-        WHERE user_id = ?
-        ORDER BY created_at DESC
+        SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC
     ''', (user_id,))
     rows = cursor.fetchall()
     

@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
+import os
 from datetime import datetime
 import json
 
@@ -13,7 +14,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-conn = sqlite3.connect('balances.db', check_same_thread=False)
+# ======================================
+# ==== НАСТРОЙКА БАЗЫ ДАННЫХ ===========
+# ======================================
+
+# База данных будет храниться в папке /app/data/ (Volume)
+# Эта папка сохраняется между деплоями на Railway
+DB_PATH = os.path.join(os.getcwd(), 'data', 'balances.db')
+
+# Создаём папку data, если её нет
+os.makedirs(os.path.join(os.getcwd(), 'data'), exist_ok=True)
+
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
 # Таблица пользователей (с замороженными средствами)
@@ -59,7 +71,7 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# Комиссия отключена (0%)
+# Комиссия отключена
 COMMISSION = 0.00
 
 # ======================================
@@ -116,6 +128,24 @@ def get_user_stats(user_id: str):
         "trades": trades_count,
         "volume": total_volume
     }
+
+# ======================================
+# ==== ЛИДЕРБОРД =======================
+# ======================================
+
+@app.get("/leaderboard")
+def get_leaderboard(limit: int = 20):
+    """Топ пользователей по балансу SWAG"""
+    cursor.execute('''
+        SELECT user_id, swag_balance FROM users 
+        ORDER BY swag_balance DESC 
+        LIMIT ?
+    ''', (limit,))
+    
+    rows = cursor.fetchall()
+    leaderboard = [{"user_id": row[0], "swag": row[1]} for row in rows]
+    
+    return {"leaderboard": leaderboard}
 
 # ======================================
 # ==== ОРДЕРА ===========================
@@ -295,38 +325,26 @@ def execute_order(order_id: int, data: dict):
     # Исполнение сделки в зависимости от типа ордера
     if order_data['type'] == 'sell':
         # Покупатель покупает у продавца (покупатель отдает USDT, получает SWAG)
-        # Проверяем достаточно ли USDT у покупателя
         if buyer[0] < total_price:
             return {"error": "Insufficient USDT balance"}, 400
         
         # Обновляем балансы
-        # У покупателя списываем USDT
         cursor.execute("UPDATE users SET usdt_balance = usdt_balance - ? WHERE user_id=?", (total_price, buyer_id))
-        # Покупателю начисляем SWAG
         cursor.execute("UPDATE users SET swag_balance = swag_balance + ? WHERE user_id=?", (amount, buyer_id))
         
-        # У продавца списываем SWAG (из замороженных)
         cursor.execute("UPDATE users SET swag_frozen = swag_frozen - ? WHERE user_id=?", (amount, order_data['seller_id']))
-        # Продавцу начисляем USDT (минус комиссия)
         cursor.execute("UPDATE users SET usdt_balance = usdt_balance + ? WHERE user_id=?", 
                       (total_price - fee, order_data['seller_id']))
         
-    else:  # buy ордер (кто-то продает покупателю)
-        # Продавец продает покупателю (продавец отдает SWAG, получает USDT)
-        # Проверяем достаточно ли SWAG у продавца (buyer_id)
+    else:  # buy ордер
         if buyer[1] < amount:
             return {"error": "Insufficient SWAG balance"}, 400
         
-        # Обновляем балансы
-        # У продавца (buyer_id) списываем SWAG
         cursor.execute("UPDATE users SET swag_balance = swag_balance - ? WHERE user_id=?", (amount, buyer_id))
-        # Продавцу начисляем USDT
         cursor.execute("UPDATE users SET usdt_balance = usdt_balance + ? WHERE user_id=?", (total_price, buyer_id))
         
-        # У покупателя (владельца ордера) списываем USDT из замороженных
         cursor.execute("UPDATE users SET usdt_frozen = usdt_frozen - ? WHERE user_id=?", 
                       (total_price, order_data['seller_id']))
-        # Покупателю начисляем SWAG (минус комиссия)
         cursor.execute("UPDATE users SET swag_balance = swag_balance + ? WHERE user_id=?", 
                       (amount - fee, order_data['seller_id']))
     
@@ -383,10 +401,12 @@ def root():
     return {
         "status": "online",
         "commission": f"{COMMISSION*100}%",
+        "db_path": DB_PATH,
         "endpoints": {
             "balance": "/balance/{user_id}",
             "add_balance": "/balance/add/{user_id}",
             "user_stats": "/user/stats/{user_id}",
+            "leaderboard": "/leaderboard",
             "orders": "/orders",
             "create_order": "/orders/create",
             "cancel_order": "/orders/cancel/{order_id}",

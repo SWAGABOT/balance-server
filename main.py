@@ -53,13 +53,14 @@ cursor.execute('''
         amount REAL NOT NULL,
         price REAL NOT NULL,
         total REAL NOT NULL,
-        fee REAL NOT NULL,
+        fee REAL DEFAULT 0,
         created_at TEXT NOT NULL
     )
 ''')
 conn.commit()
 
-COMMISSION = 0.00  # 0% комиссия
+# Комиссия отключена (0%)
+COMMISSION = 0.00
 
 # ======================================
 # ==== БАЛАНСЫ =========================
@@ -93,6 +94,28 @@ def add_balance(user_id: str, data: dict):
     cursor.execute("SELECT usdt_balance, swag_balance FROM users WHERE user_id=?", (user_id,))
     result = cursor.fetchone()
     return {"usdt": result[0], "swag": result[1]}
+
+# ======================================
+# ==== СТАТИСТИКА ПОЛЬЗОВАТЕЛЯ =========
+# ======================================
+
+@app.get("/user/stats/{user_id}")
+def get_user_stats(user_id: str):
+    """Возвращает количество сделок и общий объём для пользователя"""
+    cursor.execute('''
+        SELECT COUNT(*) as trades_count, SUM(total) as total_volume 
+        FROM trades 
+        WHERE buyer_id = ? OR seller_id = ?
+    ''', (user_id, user_id))
+    
+    result = cursor.fetchone()
+    trades_count = result[0] or 0
+    total_volume = result[1] or 0
+    
+    return {
+        "trades": trades_count,
+        "volume": total_volume
+    }
 
 # ======================================
 # ==== ОРДЕРА ===========================
@@ -261,9 +284,9 @@ def execute_order(order_id: int, data: dict):
     fee = total_price * COMMISSION
     
     # Получаем балансы участников
-    cursor.execute("SELECT * FROM users WHERE user_id=?", (buyer_id,))
+    cursor.execute("SELECT usdt_balance, swag_balance, usdt_frozen, swag_frozen FROM users WHERE user_id=?", (buyer_id,))
     buyer = cursor.fetchone()
-    cursor.execute("SELECT * FROM users WHERE user_id=?", (order_data['seller_id'],))
+    cursor.execute("SELECT usdt_balance, swag_balance, usdt_frozen, swag_frozen FROM users WHERE user_id=?", (order_data['seller_id'],))
     seller = cursor.fetchone()
     
     if not buyer or not seller:
@@ -272,11 +295,8 @@ def execute_order(order_id: int, data: dict):
     # Исполнение сделки в зависимости от типа ордера
     if order_data['type'] == 'sell':
         # Покупатель покупает у продавца (покупатель отдает USDT, получает SWAG)
-        # Проверяем достаточно ли заморожено USDT у покупателя (если он выставил buy ордер)
-        # или есть ли у него USDT на балансе
-        
-        # У покупателя должно быть достаточно USDT (незамороженных)
-        if buyer[1] < total_price:  # usdt_balance
+        # Проверяем достаточно ли USDT у покупателя
+        if buyer[0] < total_price:
             return {"error": "Insufficient USDT balance"}, 400
         
         # Обновляем балансы
@@ -293,11 +313,8 @@ def execute_order(order_id: int, data: dict):
         
     else:  # buy ордер (кто-то продает покупателю)
         # Продавец продает покупателю (продавец отдает SWAG, получает USDT)
-        
-        # Проверяем достаточно ли заморожено USDT у продавца? Нет, у продавца должен быть SWAG
-        # В этом случае buyer_id — это тот, кто хочет продать (исполнить buy ордер)
-        # Проверяем у продавца (buyer_id) достаточно ли SWAG
-        if buyer[2] < amount:  # swag_balance
+        # Проверяем достаточно ли SWAG у продавца (buyer_id)
+        if buyer[1] < amount:
             return {"error": "Insufficient SWAG balance"}, 400
         
         # Обновляем балансы
@@ -309,9 +326,9 @@ def execute_order(order_id: int, data: dict):
         # У покупателя (владельца ордера) списываем USDT из замороженных
         cursor.execute("UPDATE users SET usdt_frozen = usdt_frozen - ? WHERE user_id=?", 
                       (total_price, order_data['seller_id']))
-        # Покупателю начисляем SWAG
+        # Покупателю начисляем SWAG (минус комиссия)
         cursor.execute("UPDATE users SET swag_balance = swag_balance + ? WHERE user_id=?", 
-                      (amount - (amount * COMMISSION), order_data['seller_id']))
+                      (amount - fee, order_data['seller_id']))
     
     # Обновляем ордер
     new_amount = order_data['amount'] - amount
@@ -369,6 +386,7 @@ def root():
         "endpoints": {
             "balance": "/balance/{user_id}",
             "add_balance": "/balance/add/{user_id}",
+            "user_stats": "/user/stats/{user_id}",
             "orders": "/orders",
             "create_order": "/orders/create",
             "cancel_order": "/orders/cancel/{order_id}",
@@ -376,4 +394,3 @@ def root():
             "user_orders": "/orders/user/{user_id}"
         }
     }
-

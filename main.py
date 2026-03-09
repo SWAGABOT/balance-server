@@ -59,7 +59,7 @@ cursor.execute('''
 ''')
 conn.commit()
 
-COMMISSION = 0.02  # 2% комиссия
+COMMISSION = 0.00  # 0% комиссия
 
 # ======================================
 # ==== БАЛАНСЫ =========================
@@ -376,3 +376,4 @@ def root():
             "user_orders": "/orders/user/{user_id}"
         }
     }
+

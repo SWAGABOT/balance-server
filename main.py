@@ -27,10 +27,11 @@ print(f"📦 База данных: {DB_PATH}")
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
-# Таблица пользователей (с замороженными средствами)
+# Таблица пользователей (с замороженными средствами и username)
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS users (
         user_id TEXT PRIMARY KEY,
+        username TEXT DEFAULT '',
         usdt_balance REAL DEFAULT 0,
         swag_balance REAL DEFAULT 0,
         usdt_frozen REAL DEFAULT 0,
@@ -107,6 +108,21 @@ def add_balance(user_id: str, data: dict):
     return {"usdt": result[0], "swag": result[1]}
 
 # ======================================
+# ==== ОБНОВЛЕНИЕ USERNAME ==============
+# ======================================
+
+@app.post("/update_username/{user_id}")
+def update_username(user_id: str, data: dict):
+    """Обновить username пользователя"""
+    username = data.get('username', '')
+    
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
+    cursor.execute("UPDATE users SET username = ? WHERE user_id=?", (username, user_id))
+    conn.commit()
+    
+    return {"success": True}
+
+# ======================================
 # ==== СТАТИСТИКА ПОЛЬЗОВАТЕЛЯ =========
 # ======================================
 
@@ -136,13 +152,13 @@ def get_user_stats(user_id: str):
 def get_leaderboard(limit: int = 20):
     """Топ пользователей по балансу SWAG"""
     cursor.execute('''
-        SELECT user_id, swag_balance FROM users 
+        SELECT user_id, username, swag_balance FROM users 
         ORDER BY swag_balance DESC 
         LIMIT ?
     ''', (limit,))
     
     rows = cursor.fetchall()
-    leaderboard = [{"user_id": row[0], "swag": row[1]} for row in rows]
+    leaderboard = [{"user_id": row[0], "username": row[1] or '', "swag": row[2]} for row in rows]
     
     return {"leaderboard": leaderboard}
 
@@ -159,7 +175,7 @@ def get_all_users(user_id: str):
         return {"error": "Access denied"}, 403
     
     cursor.execute('''
-        SELECT user_id, usdt_balance, swag_balance, usdt_frozen, swag_frozen 
+        SELECT user_id, username, usdt_balance, swag_balance, usdt_frozen, swag_frozen 
         FROM users 
         ORDER BY swag_balance DESC
     ''')
@@ -169,10 +185,11 @@ def get_all_users(user_id: str):
     for row in rows:
         users.append({
             "user_id": row[0],
-            "usdt": row[1],
-            "swag": row[2],
-            "usdt_frozen": row[3],
-            "swag_frozen": row[4]
+            "username": row[1],
+            "usdt": row[2],
+            "swag": row[3],
+            "usdt_frozen": row[4],
+            "swag_frozen": row[5]
         })
     
     return {
@@ -473,6 +490,7 @@ def root():
         "endpoints": {
             "balance": "/balance/{user_id}",
             "add_balance": "/balance/add/{user_id}",
+            "update_username": "/update_username/{user_id}",
             "user_stats": "/user/stats/{user_id}",
             "leaderboard": "/leaderboard",
             "admin_users": "/admin/users?user_id=YOUR_ID",
